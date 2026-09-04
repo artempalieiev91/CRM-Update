@@ -1,0 +1,14 @@
+.crm_update_workspace/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+.env
+.idea/
+.run/
+
+# Lead / CRM data — do not publish
+*.csv
+!industry_mapping.csv
+
