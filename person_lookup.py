@@ -181,11 +181,16 @@ def emails_display_from_row(row: pd.Series, email_cols: list[str]) -> str:
 
 
 def normalize_email_key(value: object) -> str:
-    """Ключ для метчу email (як у формулах Comp)."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    """Ключ для метчу email (як у формулах Comp). Порожній email — не ключ."""
+    if value is None:
         return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
     raw = str(value).strip().lower()
-    if not raw:
+    if not raw or raw in {"nan", "<na>", "none", "n/a", "<n/a>"}:
         return ""
     if "<" in raw and ">" in raw:
         m = re.search(r"<([^>]+)>", raw)

@@ -11,6 +11,7 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 
 from excel_utils import excel_cell_value
+from linkedin_urls import LINKEDIN_PERSON_COLUMN, linkedin_person_match_key
 
 # Ключ матчу
 ACTIVITY_APOLLO_ID_COLUMN = "Person - Apollo Contact id"
@@ -18,6 +19,7 @@ RESEARCH_APOLLO_ID_COLUMN = "Person - Apollo Contact id"
 
 # Колонки з файлу активностей
 ACTIVITY_EMAIL_COLUMN = "Person - Email - Work"
+ACTIVITY_LINKEDIN_COLUMN = "Person - LinkedIn"
 ACTIVITY_CONTACT_STARTER_COLUMN = "Person - Contact starter"
 ACTIVITY_RESEARCH_ID_COLUMN = "Person - Research ID"
 ACTIVITY_RESEARCH_ICP_COLUMN = "Organization - Research ICP"
@@ -116,6 +118,23 @@ def build_research_email_index(research_df: pd.DataFrame) -> dict[str, pd.Series
     return idx
 
 
+def build_research_linkedin_index(research_df: pd.DataFrame) -> dict[str, pd.Series]:
+    """LinkedIn Person → рядок research (ліди без email)."""
+    idx: dict[str, pd.Series] = {}
+    col = None
+    for name in (LINKEDIN_PERSON_COLUMN, ACTIVITY_LINKEDIN_COLUMN):
+        if name in research_df.columns:
+            col = name
+            break
+    if col is None:
+        return idx
+    for _, row in research_df.iterrows():
+        key = linkedin_person_match_key(row.get(col, ""))
+        if key and key not in idx:
+            idx[key] = row
+    return idx
+
+
 def _research_row_value(row: pd.Series, *columns: str) -> str:
     for col in columns:
         if col not in row.index:
@@ -158,9 +177,12 @@ def _resolve_research_row(
     apollo_idx: dict[str, pd.Series],
     email_idx: dict[str, pd.Series],
     person_id_idx: dict[str, pd.Series] | None = None,
+    linkedin: object = None,
+    linkedin_idx: dict[str, pd.Series] | None = None,
 ) -> pd.Series | None:
-    """Рядок research: Apollo id (кожен з коми) → Email → Person - ID."""
+    """Рядок research: Apollo id → Email → LinkedIn → Person - ID."""
     person_id_idx = person_id_idx or {}
+    linkedin_idx = linkedin_idx or {}
     for part in _split_apollo_ids(apollo_raw):
         row = apollo_idx.get(part)
         if row is not None:
@@ -168,7 +190,61 @@ def _resolve_research_row(
     row = email_idx.get(_normalize_key(email))
     if row is not None:
         return row
+    li_key = linkedin_person_match_key(linkedin)
+    if li_key:
+        row = linkedin_idx.get(li_key)
+        if row is not None:
+            return row
     return person_id_idx.get(_normalize_key(person_id))
+
+
+def _lookup_research_rows(
+    activities_df: pd.DataFrame,
+    research_df: pd.DataFrame | None,
+) -> list[pd.Series | None]:
+    """Для кожного рядка activities — рядок research (Apollo → Email → LinkedIn → Person ID)."""
+    n = len(activities_df)
+    if n == 0 or research_df is None or research_df.empty:
+        return [None] * n
+    apollo_idx = build_research_apollo_index(research_df)
+    email_idx = build_research_email_index(research_df)
+    person_id_idx = _build_person_id_index(research_df)
+    linkedin_idx = build_research_linkedin_index(research_df)
+    apollo_raws = (
+        activities_df[ACTIVITY_APOLLO_ID_COLUMN].tolist()
+        if ACTIVITY_APOLLO_ID_COLUMN in activities_df.columns
+        else [""] * n
+    )
+    emails = (
+        activities_df[ACTIVITY_EMAIL_COLUMN].tolist()
+        if ACTIVITY_EMAIL_COLUMN in activities_df.columns
+        else [""] * n
+    )
+    person_ids = (
+        activities_df["Person - ID"].tolist()
+        if "Person - ID" in activities_df.columns
+        else [""] * n
+    )
+    linkedins = (
+        activities_df[ACTIVITY_LINKEDIN_COLUMN].tolist()
+        if ACTIVITY_LINKEDIN_COLUMN in activities_df.columns
+        else [""] * n
+    )
+    return [
+        _resolve_research_row(
+            apollo,
+            email,
+            pid,
+            apollo_idx=apollo_idx,
+            email_idx=email_idx,
+            person_id_idx=person_id_idx,
+            linkedin=linkedin,
+            linkedin_idx=linkedin_idx,
+        )
+        for apollo, email, pid, linkedin in zip(
+            apollo_raws, emails, person_ids, linkedins
+        )
+    ]
 
 
 def _resolve_activity_apollo_ids(
@@ -292,7 +368,7 @@ def merge_activities_with_research(
     leads_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
-    Зливає activities файл з research CSV по Person - Apollo Contact id.
+    Зливає activities з research: Apollo Contact id → Email → LinkedIn → Person - ID.
     Повертає DataFrame у форматі вихідного листа.
     """
     out = activities_df.copy()
@@ -300,10 +376,12 @@ def merge_activities_with_research(
     apollo_idx: dict[str, pd.Series] = {}
     email_idx: dict[str, pd.Series] = {}
     person_id_idx: dict[str, pd.Series] = {}
+    linkedin_idx: dict[str, pd.Series] = {}
     if research_df is not None and not research_df.empty:
         apollo_idx = build_research_apollo_index(research_df)
         email_idx = build_research_email_index(research_df)
         person_id_idx = _build_person_id_index(research_df)
+        linkedin_idx = build_research_linkedin_index(research_df)
 
     apollo_col = ACTIVITY_APOLLO_ID_COLUMN
     email_col = ACTIVITY_EMAIL_COLUMN
@@ -323,10 +401,17 @@ def merge_activities_with_research(
         if person_col in out.columns
         else [""] * len(out)
     )
+    linkedins = (
+        out[ACTIVITY_LINKEDIN_COLUMN].tolist()
+        if ACTIVITY_LINKEDIN_COLUMN in out.columns
+        else [""] * len(out)
+    )
 
     def _research_cols(*columns: str) -> list[str]:
         values: list[str] = []
-        for apollo_raw, email, person_id in zip(apollo_raws, emails, person_ids):
+        for apollo_raw, email, person_id, linkedin in zip(
+            apollo_raws, emails, person_ids, linkedins
+        ):
             row = _resolve_research_row(
                 apollo_raw,
                 email,
@@ -334,6 +419,8 @@ def merge_activities_with_research(
                 apollo_idx=apollo_idx,
                 email_idx=email_idx,
                 person_id_idx=person_id_idx,
+                linkedin=linkedin,
+                linkedin_idx=linkedin_idx,
             )
             values.append(
                 _research_row_value(row, *columns) if row is not None else ""
@@ -625,22 +712,16 @@ def build_final_export(
     include_linkedin_active: bool = False,
 ) -> pd.DataFrame:
     """Формує фінальний DataFrame з 17 колонками для заливки в CRM.
-    Поля з research CSV матчаться по Person - ID.
+    Research: колонки (research) у merged, інакше Apollo → Email → LinkedIn → Person ID.
     Опційно додає Person - Linkedin Active після Person - Research ID.
     """
     today = datetime.now().strftime("%Y-%m-%d")
     n = len(filtered_df)
+    research_rows = _lookup_research_rows(filtered_df, research_df)
 
-    person_id_idx = _build_person_id_index(research_df) if research_df is not None else {}
-
-    def _res(person_id: object, col: str) -> str:
-        row = person_id_idx.get(_normalize_key(person_id))
-        if row is None:
-            return ""
-        val = row.get(col, "")
-        return "" if pd.isna(val) else str(val).strip()
-
-    person_ids = filtered_df["Person - ID"].tolist() if "Person - ID" in filtered_df.columns else [""] * n
+    def _from_research(index: int, *columns: str) -> str:
+        row = research_rows[index] if index < len(research_rows) else None
+        return _research_row_value(row, *columns) if row is not None else ""
 
     result = pd.DataFrame()
     for col in FINAL_COLUMNS:
@@ -666,20 +747,18 @@ def build_final_export(
                 else [""] * n
             )
             combined_starter: list[str] = []
-            for rv, av, pid in zip(research_vals, act_vals, person_ids):
-                if rv:
-                    combined_starter.append(rv)
-                elif av:
-                    combined_starter.append(av)
-                else:
-                    combined_starter.append(_res(pid, RESEARCH_CONTACT_STARTER_COLUMN))
+            for i, (rv, av) in enumerate(zip(research_vals, act_vals)):
+                combined_starter.append(
+                    rv or _from_research(i, RESEARCH_CONTACT_STARTER_COLUMN) or av
+                )
             result[col] = combined_starter
         elif col == "Person - Research ID":
             act_ids = filtered_df["Person - Research ID"].fillna("").astype(str).str.strip().tolist() if "Person - Research ID" in filtered_df.columns else [""] * n
-            # Person - Research ID (research) вже є в merged файлі — просто беремо звідти
             notion_ids = filtered_df["Person - Research ID (research)"].fillna("").astype(str).str.strip().tolist() if "Person - Research ID (research)" in filtered_df.columns else [""] * n
             combined = []
-            for act, notion in zip(act_ids, notion_ids):
+            for i, (act, notion) in enumerate(zip(act_ids, notion_ids)):
+                if not notion:
+                    notion = _from_research(i, RESEARCH_RESEARCH_ID_COLUMN)
                 if notion and act:
                     # Нове значення (research) — першим, далі попередні з activities.
                     parts = [p.strip() for p in f"{notion},{act}".split(",") if p.strip()]
@@ -724,7 +803,7 @@ def build_final_export(
                     filtered_df[research_icp_src].fillna("").astype(str).str.strip().tolist()
                 )
             else:
-                icp_name_vals = [_res(pid, RESEARCH_ICP_COLUMN) for pid in person_ids]
+                icp_name_vals = [""] * n
             subj_vals = (
                 filtered_df["Activity - Subject"]
                 .fillna("")
@@ -735,7 +814,9 @@ def build_final_export(
                 else [""] * n
             )
             combined_icp = []
-            for icp, icp_name, subj in zip(icp_vals, icp_name_vals, subj_vals):
+            for i, (icp, icp_name, subj) in enumerate(zip(icp_vals, icp_name_vals, subj_vals)):
+                if not icp_name:
+                    icp_name = _from_research(i, *RESEARCH_ICP_FALLBACK_COLUMNS)
                 add = icp_name if icp_name else subj
                 # Нове значення (ICP name) — першим, далі попередні з activities.
                 parts = [p.strip() for p in f"{add},{icp}".split(",") if p.strip()]
@@ -857,10 +938,10 @@ def normalize_activities_work_file(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _deletion_owner(value: object) -> str:
-    """Daria → Researcher для Person / Organization - Owner у del-файлі."""
+    """Person / Organization - Owner у del-файлі: порожньо або Daria → Researcher."""
     text = _cell_text(value)
     if not text:
-        return text
+        return "Researcher"
     first = text.casefold().split()[0]
     if first == "daria":
         return "Researcher"

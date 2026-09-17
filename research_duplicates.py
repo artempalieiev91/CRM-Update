@@ -52,7 +52,9 @@ def annotate_research_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
     if EMAIL_COLUMN in out.columns:
         out[RESEARCH_DUPLICATE_EMAIL_COLUMN] = out[EMAIL_COLUMN].map(
-            lambda v: "yes" if normalize_email_key(v) in email_dupes else ""
+            lambda v: "yes"
+            if (key := normalize_email_key(v)) and key in email_dupes
+            else ""
         )
     else:
         out[RESEARCH_DUPLICATE_EMAIL_COLUMN] = ""

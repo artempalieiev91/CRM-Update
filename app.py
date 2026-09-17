@@ -415,6 +415,7 @@ def _build_exports(
             "Немає рядків для обробки (перевірте фільтр "
             f"«{crm_status_filter_label(crm_status_filter)}»)."
         )
+    pending = annotate_research_duplicates(pending)
     comp = build_ppl_leads_export(
         pending,
         person_lookup=_get_person_lookup(),
@@ -1551,9 +1552,14 @@ else:
             f"{st.session_state.loaded_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-    if st.session_state.full_df is not None:
-        full_research = st.session_state.full_df
-        dupe_stats = research_duplicate_stats(full_research)
+    if st.session_state.pending_df is not None and not st.session_state.pending_df.empty:
+        dupe_source = st.session_state.pending_df
+    elif st.session_state.full_df is not None:
+        dupe_source = st.session_state.full_df
+    else:
+        dupe_source = None
+    if dupe_source is not None:
+        dupe_stats = research_duplicate_stats(dupe_source)
         if (
             dupe_stats["rows_with_any_duplicate"] > 0
             or dupe_stats["duplicate_email_keys"]
@@ -1575,10 +1581,10 @@ else:
                 f"**{RESEARCH_DUPLICATE_LINKEDIN_COLUMN}** = `yes`). "
                 "Перевірте перед імпортом у CRM."
             )
-            report_df = build_research_duplicates_report(full_research)
+            report_df = build_research_duplicates_report(dupe_source)
             if not report_df.empty:
                 st.dataframe(report_df, use_container_width=True, height=220)
-            dupe_rows_df = research_duplicate_rows(full_research)
+            dupe_rows_df = research_duplicate_rows(dupe_source)
             preview_cols = [
                 c
                 for c in (
